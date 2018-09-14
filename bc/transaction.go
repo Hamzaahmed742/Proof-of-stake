@@ -8,24 +8,24 @@ import (
 	// "fmt"
 	"golang.org/x/crypto/sha3"
 	// "hash"
+	"crypto/elliptic"
 	"math/big"
 	"reflect"
 )
 
 type Transaction struct {
-	Hash     [32]byte
-	R, S     *big.Int
-	From, To Account
-	Amount   int64
+	Hash [32]byte
+	Sig  [64]byte
+	Info TxInfo
 }
 
-type HashBuidlingBlocks struct {
+type TxInfo struct {
 	Nonce, Amount int64
 	From, To      [64]byte
 }
 
-func ConstrTransaction(nonce, amount int64, from, to Account, key *ecdsa.PrivateKey) (tx Transaction, err error) {
-	if amount > from.Balance {
+func ConstrTx(nonce, amount int64, from, to Account, key *ecdsa.PrivateKey) (tx Transaction, err error) {
+	if amount > from.Balance && amount > 0 {
 		return
 	}
 	if reflect.DeepEqual(from, to) {
@@ -35,21 +35,41 @@ func ConstrTransaction(nonce, amount int64, from, to Account, key *ecdsa.Private
 		return
 	}
 
-	serialized := encodeTransactContent(nonce, amount, from.Id, to.Id)
-	tx.R, tx.S, err = ecdsa.Sign(rand.Reader, key, serialized)
-
-	tx.From = from
-	tx.To = to
-	tx.Amount = amount
+	serialized := encodeTxContent(nonce, amount, from.Id, to.Id)
 	tx.Hash = sha3.Sum256(serialized)
+
+	r, s, err := ecdsa.Sign(rand.Reader, key, tx.Hash[:])
+
+	copy(tx.Sig[:32], r.Bytes())
+	copy(tx.Sig[32:], s.Bytes())
+
+	tx.Info.From = from.Id
+	tx.Info.To = to.Id
+	tx.Info.Amount = amount
 
 	return
 }
 
-func encodeTransactContent(nonce, amount int64, from, to [64]byte) (enc []byte) {
-	var buff bytes.Buffer
+func encodeTxContent(nonce, amount int64, from, to [64]byte) (enc []byte) {
+	var buf bytes.Buffer
 
-	hash := HashBuidlingBlocks{nonce, amount, from, to}
-	binary.Write(&buff, binary.LittleEndian, hash)
-	return buff.Bytes()
+	hash := TxInfo{nonce, amount, from, to}
+	binary.Write(&buf, binary.BigEndian, hash)
+	return buf.Bytes()
+}
+
+func (tx *Transaction) VerifyTx() bool {
+	pub1, pub2 := new(big.Int), new(big.Int)
+	r, s := new(big.Int), new(big.Int)
+
+	pub1.SetBytes(tx.Info.From[:32])
+	pub2.SetBytes(tx.Info.From[32:])
+
+	pubKey := ecdsa.PublicKey{elliptic.P256(), pub1, pub2}
+	r.SetBytes(tx.Sig[:32])
+	s.SetBytes(tx.Sig[32:])
+
+	correct := ecdsa.Verify(&pubKey, tx.Hash[:], r, s)
+
+	return correct
 }
